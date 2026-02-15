@@ -5,19 +5,16 @@ import logging
 import aiohttp
 from typing import List, Optional, Dict, Any
 
-# ================== 核心修复 ==================
-# 1. 导入 command 装饰器
+# 导入所有标准 API
 from astrbot.api.all import *
 from astrbot.core.message.components import Image
 
-logger = logging.getLogger("astrbot.plugins.halo_manager")
-
 @register(
-    "halo_manager",
+    "astrbot_plugin_halo_manager",
     "CAN",
-    "Halo 2.x 博客管理插件 - 支持发布文章、管理评论、上传素材",
-    "1.2.3",
-    "https://github.com/your-repo/halo_manager" 
+    "Halo 2.x 博客管理插件",
+    "1.2.6",
+    "https://github.com/your-repo/halo_manager"
 )
 class HaloManager(Star):
     def __init__(self, context: Context, config: Dict[str, Any]):
@@ -29,20 +26,32 @@ class HaloManager(Star):
         self.base_url = raw_url.rstrip('/') if raw_url else ""
         self.token = self.config.get("halo_token", "")
         
+        # --- 修复日志报错 ---
+        # 使用 self.context.logger 而不是自己创建 logger
         if not self.base_url or not self.token:
-            logger.warning("[HaloManager] ⚠️ 配置缺失！请在 Web 面板或 metadata.yaml 中填写 URL 和 Token。")
+            # 注意：这里的日志调用实际上是在 __init__ 里，建议用 print 或者稍后在 handle 中记录
+            # 但 AstrBot 的 context.logger 支持直接调用
+            # 加上 plugin_tag 避免格式化错误
+            self.context.logger.warning(
+                f"[HaloManager] ⚠️ 配置缺失！请在 Web 面板配置 URL 和 Token。", 
+                extra={"plugin_tag": "HaloManager"}
+            )
 
     # ================= 辅助函数 =================
 
     async def _request(self, method: str, endpoint: str, json_data: dict = None, form_data: aiohttp.FormData = None) -> dict:
         """异步请求 Halo API"""
-        if not self.base_url or not self.token:
+        raw_url = self.config.get("halo_url", "")
+        base_url = raw_url.rstrip('/') if raw_url else ""
+        token = self.config.get("halo_token", "")
+
+        if not base_url or not token:
             return {"error": "配置未填写", "details": "请在 AstrBot 设置中配置 Halo URL 和 Token"}
 
-        url = f"{self.base_url}{endpoint}"
+        url = f"{base_url}{endpoint}"
         
         headers = {
-            "Authorization": f"Bearer {self.token}",
+            "Authorization": f"Bearer {token}",
             "Accept": "application/json"
         }
 
@@ -52,7 +61,11 @@ class HaloManager(Star):
                     async with session.request(method, url, headers=headers, data=form_data) as resp:
                         if resp.status >= 400:
                             text = await resp.text()
-                            logger.error(f"[HaloManager] Upload Error: {resp.status} - {text}")
+                            # 修复日志调用
+                            self.context.logger.error(
+                                f"Upload Error: {resp.status} - {text}", 
+                                extra={"plugin_tag": "HaloManager"}
+                            )
                             return {"error": f"API Error {resp.status}", "details": text[:200]}
                         return await resp.json()
                 else:
@@ -60,17 +73,22 @@ class HaloManager(Star):
                     async with session.request(method, url, headers=headers, json=json_data) as resp:
                         if resp.status >= 400:
                             text = await resp.text()
-                            logger.error(f"[HaloManager] API Error: {resp.status} - {text}")
+                            # 修复日志调用
+                            self.context.logger.error(
+                                f"API Error: {resp.status} - {text}", 
+                                extra={"plugin_tag": "HaloManager"}
+                            )
                             return {"error": f"API Error {resp.status}", "details": text[:200]}
                         return await resp.json()
             except Exception as e:
-                logger.error(f"[HaloManager] Network Exception: {e}")
+                # 修复日志调用
+                self.context.logger.error(
+                    f"Network Exception: {e}", 
+                    extra={"plugin_tag": "HaloManager"}
+                )
                 return {"error": "网络请求异常", "details": str(e)}
 
-    # ================= 核心功能 (Commands/Tools) =================
-    
-    # 【修复点】：使用 @command 而不是 @filter.command
-    # 在 AstrBot 中，@command 注册的函数既可以作为指令调用，也可以被 LLM 作为 Tool 调用
+    # ================= Command / Tools =================
     
     @command("publish_blog_post")
     async def publish_post(self, event: AstrMessageEvent, title: str, content: str, slug: str = None):
@@ -106,7 +124,9 @@ class HaloManager(Star):
         if "error" in res:
             yield event.plain_result(f"❌ 发布失败: {res.get('details', '未知错误')}")
         else:
-            post_url = f"{self.base_url}/archives/{slug}"
+            raw_url = self.config.get("halo_url", "")
+            base_url = raw_url.rstrip('/') if raw_url else ""
+            post_url = f"{base_url}/archives/{slug}"
             yield event.plain_result(f"✅ 发布成功！\n文章标题: {title}\n🔗 链接: {post_url}")
 
     @command("get_blog_comments")
@@ -187,18 +207,17 @@ class HaloManager(Star):
     @command("upload_blog_image")
     async def upload_image(self, event: AstrMessageEvent):
         """
-        上传图片到博客。必须在发送图片时调用，或引用图片消息。
+        上传图片到博客。
         """
         target_img_url = None
         
-        # 检查当前消息链
         for component in event.message_obj.message:
             if isinstance(component, Image):
                 target_img_url = component.url
                 break
         
         if not target_img_url:
-            yield event.plain_result("⚠️ 请先发送图片（或引用图片），然后说 '上传这张图'。")
+            yield event.plain_result("⚠️ 请发送包含图片的指令。")
             return
 
         yield event.plain_result("⏳ 正在下载并上传...")
@@ -217,6 +236,7 @@ class HaloManager(Star):
         file_name = f"upload_{int(time.time())}.jpg"
         form_data = aiohttp.FormData()
         form_data.add_field('file', img_bytes, filename=file_name, content_type='image/jpeg')
+        # Halo 2.x 策略和组名
         form_data.add_field('policy', 'default')
         form_data.add_field('group', 'default')
 
@@ -226,4 +246,4 @@ class HaloManager(Star):
             yield event.plain_result(f"❌ 上传 Halo 失败: {res.get('details')}")
         else:
             permalink = res.get("spec", {}).get("permalink", "")
-            yield event.plain_result(f"✅ 上传成功！\n🔗 Markdown: ![]({permalink})")
+            yield event.plain_result(f"✅ 上传成功！\n🔗 Link: {permalink}")

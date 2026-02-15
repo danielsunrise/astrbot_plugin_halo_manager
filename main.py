@@ -5,9 +5,9 @@ import logging
 import aiohttp
 from typing import List, Optional, Dict, Any
 
-# 导入所有标准 API
+# ================== 核心修复 ==================
+# 1. 导入 command 装饰器
 from astrbot.api.all import *
-# 显式导入图片组件，用于处理图片上传
 from astrbot.core.message.components import Image
 
 logger = logging.getLogger("astrbot.plugins.halo_manager")
@@ -16,7 +16,7 @@ logger = logging.getLogger("astrbot.plugins.halo_manager")
     "halo_manager",
     "CAN",
     "Halo 2.x 博客管理插件 - 支持发布文章、管理评论、上传素材",
-    "1.2.2",
+    "1.2.3",
     "https://github.com/your-repo/halo_manager" 
 )
 class HaloManager(Star):
@@ -49,7 +49,6 @@ class HaloManager(Star):
         async with aiohttp.ClientSession() as session:
             try:
                 if form_data:
-                    # 上传图片时，Content-Type 由 aiohttp 自动生成 boundary
                     async with session.request(method, url, headers=headers, data=form_data) as resp:
                         if resp.status >= 400:
                             text = await resp.text()
@@ -70,10 +69,10 @@ class HaloManager(Star):
 
     # ================= 核心功能 (Commands/Tools) =================
     
-    # 修正说明：将 @filter.llm_tool 改为 @filter.command
-    # AstrBot 会自动解析函数签名和 docstring 作为 LLM 的 Tool 描述
-
-    @filter.command("publish_blog_post")
+    # 【修复点】：使用 @command 而不是 @filter.command
+    # 在 AstrBot 中，@command 注册的函数既可以作为指令调用，也可以被 LLM 作为 Tool 调用
+    
+    @command("publish_blog_post")
     async def publish_post(self, event: AstrMessageEvent, title: str, content: str, slug: str = None):
         """
         发布一篇新的博客文章。
@@ -102,9 +101,6 @@ class HaloManager(Star):
             }
         }
 
-        # 提示用户正在处理
-        # await event.send(f"正在发布文章《{title}》...") 
-
         res = await self._request("POST", "/apis/content.halo.run/v1alpha1/posts", json_data=payload)
         
         if "error" in res:
@@ -113,7 +109,7 @@ class HaloManager(Star):
             post_url = f"{self.base_url}/archives/{slug}"
             yield event.plain_result(f"✅ 发布成功！\n文章标题: {title}\n🔗 链接: {post_url}")
 
-    @filter.command("get_blog_comments")
+    @command("get_blog_comments")
     async def get_comments(self, event: AstrMessageEvent):
         """获取博客最新的评论列表"""
         
@@ -142,10 +138,10 @@ class HaloManager(Star):
             
             msg_list.append(f"--------------\n👤 {c_user}: {c_content}\n🆔 ID: {c_name_id}")
 
-        msg_list.append("\n💡 回复格式: '回复评论 [ID] 内容...' (请让AI调用 reply_blog_comment)")
+        msg_list.append("\n💡 让 AI 回复请说: '帮我回复评论 [ID] 内容...'")
         yield event.plain_result("\n".join(msg_list))
 
-    @filter.command("reply_blog_comment")
+    @command("reply_blog_comment")
     async def reply_comment(self, event: AstrMessageEvent, comment_id: str, content: str):
         """
         回复博客评论 (自动查找关联文章)
@@ -188,7 +184,7 @@ class HaloManager(Star):
         else:
             yield event.plain_result(f"✅ 回复成功！")
 
-    @filter.command("upload_blog_image")
+    @command("upload_blog_image")
     async def upload_image(self, event: AstrMessageEvent):
         """
         上传图片到博客。必须在发送图片时调用，或引用图片消息。

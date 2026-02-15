@@ -99,6 +99,4 @@ A: 请确保 Halo 后台的 **附件设置** 允许上传图片，且你配置�
 
 ---
 
-<div align="center">
-  <strong>I LOVE CODING ❤️ Make Blog Management Easier</strong>
-</div>****
+

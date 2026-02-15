@@ -1,12 +1,12 @@
 {
   "type": "object",
   "title": "Halo 博客配置",
-  "description": "配置 Halo 2.x 博客的连接信息。请确保你有 Halo 的后台管理权限并已生成 Personal Access Token。",
+  "description": "配置 Halo 2.x 博客的连接信息。",
   "properties": {
     "halo_url": {
       "type": "string",
       "title": "博客地址 (URL)",
-      "description": "Halo 博客的完整访问地址，例如 http://192.168.1.10:8090 或 https://mysite.com",
+      "description": "Halo 博客的完整访问地址，例如 http://192.168.1.10:8090",
       "default": "http://localhost:8090"
     },
     "halo_token": {

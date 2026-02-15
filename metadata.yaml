@@ -1,0 +1,9 @@
+name: "halo_manager"
+version: "1.2.0"
+desc: "Halo 2.x 博客管理插件 - 支持发布文章、管理评论、上传素材"
+author: "CAN"
+url: "https://github.com/your-repo/halo_manager"
+# 定义插件所需的配置模板，用于首次生成 config.json
+config_template:
+  halo_url: "http://your-halo-site.com"
+  halo_token: "your_personal_access_token"

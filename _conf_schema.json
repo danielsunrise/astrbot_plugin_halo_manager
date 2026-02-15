@@ -1,23 +1,14 @@
 {
-  "type": "object",
-  "title": "Halo 博客配置",
-  "description": "配置 Halo 2.x 博客的连接信息。",
-  "properties": {
     "halo_url": {
-      "type": "string",
-      "title": "博客地址 (URL)",
-      "description": "Halo 博客的完整访问地址，例如 http://192.168.1.10:8090",
-      "default": "http://localhost:8090"
+        "type": "string",
+        "title": "博客地址 (URL)",
+        "description": "Halo 博客的完整访问地址，例如 http://192.168.1.10:8090",
+        "default": "http://localhost:8090"
     },
     "halo_token": {
-      "type": "string",
-      "title": "个人访问令牌 (PAT)",
-      "description": "在 Halo 后台 -> 用户 -> 个人访问令牌 中生成的 Token。",
-      "default": ""
+        "type": "string",
+        "title": "个人访问令牌 (PAT)",
+        "description": "在 Halo 后台 -> 用户 -> 个人访问令牌 中生成的 Token。",
+        "default": ""
     }
-  },
-  "required": [
-    "halo_url",
-    "halo_token"
-  ]
 }

@@ -2,5 +2,6 @@ name: "halo_manager"
 version: "1.2.4"
 author: "CAN"
 desc: "Halo 2.x 博客管理插件"
-url: "https://github.com/your-repo/halo_manager"
+url: "https://github.com/danielsunrise/astrbot_plugin_halo_manager"
+
 

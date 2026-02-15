@@ -4,16 +4,3 @@ author: "CAN"
 desc: "Halo 2.x 博客管理插件"
 url: "https://github.com/your-repo/halo_manager"
 
-# 这里就是配置定义，不需要 json 文件了
-config:
-  halo_url:
-    type: string
-    title: "博客地址 (URL)"
-    desc: "Halo 博客的完整访问地址，例如 http://192.168.1.10:8090 或 https://mysite.com"
-    default: "http://localhost:8090"
-    
-  halo_token:
-    type: string
-    title: "个人访问令牌 (PAT)"
-    desc: "在 Halo 后台 -> 用户 -> 个人访问令牌 中生成的 Token。"
-    default: ""

@@ -12,7 +12,7 @@ from astrbot.core.message.components import Image
     "astrbot_plugin_halo_manager",
     "CAN",
     "Halo 2.x 博客管理插件",
-    "1.2.7",
+    "1.2.8",
     "https://github.com/your-repo/halo_manager"
 )
 class HaloManager(Star):
@@ -25,9 +25,10 @@ class HaloManager(Star):
         self.base_url = raw_url.rstrip('/') if raw_url else ""
         self.token = self.config.get("halo_token", "")
         
-        # 使用 print 代替 logger，彻底规避格式化错误
+        # --- 这里的逻辑已修改 ---
+        # 如果配置为空，我们只打印到控制台，绝不调用 logger 以避免 Formatting Error
         if not self.base_url or not self.token:
-            print("[HaloManager] ⚠️ 配置缺失！请在 Web 面板或 _conf_schema.json 中填写 URL 和 Token。")
+            print("[HaloManager] ⚠️ 警告：配置缺失！请在 Web 面板或 _conf_schema.json 中填写 URL 和 Token。")
 
     # ================= 辅助函数 =================
 
@@ -43,14 +44,13 @@ class HaloManager(Star):
             "Accept": "application/json"
         }
 
-        # 捕获所有可能的网络异常
         try:
             async with aiohttp.ClientSession() as session:
                 if form_data:
-                    # 上传文件通常不需要手动设置 Content-Type，aiohttp 会自动处理 boundary
                     async with session.request(method, url, headers=headers, data=form_data) as resp:
                         if resp.status >= 400:
                             text = await resp.text()
+                            # print 代替 logger
                             print(f"[HaloManager] Upload Error: {resp.status} - {text[:100]}")
                             return {"error": f"API Error {resp.status}", "details": text[:200]}
                         return await resp.json()
@@ -59,10 +59,12 @@ class HaloManager(Star):
                     async with session.request(method, url, headers=headers, json=json_data) as resp:
                         if resp.status >= 400:
                             text = await resp.text()
+                            # print 代替 logger
                             print(f"[HaloManager] API Error: {resp.status} - {text[:100]}")
                             return {"error": f"API Error {resp.status}", "details": text[:200]}
                         return await resp.json()
         except Exception as e:
+            # print 代替 logger
             print(f"[HaloManager] Network Exception: {e}")
             return {"error": "网络请求异常", "details": str(e)}
 
@@ -109,7 +111,6 @@ class HaloManager(Star):
     async def get_comments(self, event: AstrMessageEvent):
         """获取博客最新的评论列表"""
         
-        # Halo 2.x API
         endpoint = "/apis/content.halo.run/v1alpha1/comments?sort=metadata.creationTimestamp,desc&page=0&size=5"
         res = await self._request("GET", endpoint)
 
@@ -131,7 +132,6 @@ class HaloManager(Star):
             c_user = spec.get("owner", {}).get("displayName", "匿名用户")
             c_content = spec.get("content", "无内容")
             
-            # 简单的内容截断
             if len(c_content) > 50: c_content = c_content[:50] + "..."
             
             msg_list.append(f"--------------\n👤 {c_user}: {c_content}\n🆔 ID: {c_name_id}")
@@ -147,7 +147,6 @@ class HaloManager(Star):
             comment_id (str): 评论的唯一 ID (name)
             content (str): 回复内容
         """
-        # 1. 获取原评论信息，为了拿到文章 ID (subjectRef)
         info_res = await self._request("GET", f"/apis/content.halo.run/v1alpha1/comments/{comment_id}")
         
         if "error" in info_res:
@@ -159,7 +158,6 @@ class HaloManager(Star):
             yield event.plain_result("❌ 无法解析原评论所属文章，回复失败。")
             return
 
-        # 2. 构造回复 payload
         reply_uuid = str(uuid.uuid4())
         payload = {
             "apiVersion": "content.halo.run/v1alpha1",
@@ -191,7 +189,6 @@ class HaloManager(Star):
         """
         target_img_url = None
         
-        # 解析消息中的图片
         for component in event.message_obj.message:
             if isinstance(component, Image):
                 target_img_url = component.url
@@ -214,15 +211,12 @@ class HaloManager(Star):
             yield event.plain_result(f"❌ 下载异常: {e}")
             return
 
-        # 构造上传表单
         file_name = f"upload_{int(time.time())}.jpg"
         form_data = aiohttp.FormData()
-        # 注意：add_field 的参数顺序和字段名要符合 Halo 要求
         form_data.add_field('file', img_bytes, filename=file_name, content_type='image/jpeg')
         form_data.add_field('policy', 'default')
         form_data.add_field('group', 'default')
 
-        # 上传端点
         res = await self._request("POST", "/apis/api.console.halo.run/v1alpha1/attachments/upload", form_data=form_data)
 
         if "error" in res:

@@ -25,32 +25,26 @@ CONFIG_HALO_TOKEN = "halo_token"
 
 
 def _build_create_post_payload(title: str, content: str, slug: str) -> Dict[str, Any]:
-    """按 Halo 2.x 标准请求体构建发帖 payload：顶层 content + post。"""
+    """构建发帖 payload。POST /apis/.../posts 使用单资源体，ReactiveExtensionClient 只接受 Post 资源。"""
     return {
-        "content": {
-            "content": content,
-            "raw": content,
-            "rawType": "MARKDOWN",
-            "version": 0,
+        "apiVersion": API_CONTENT,
+        "kind": "Post",
+        "metadata": {
+            "name": slug,
+            "labels": {},
         },
-        "post": {
-            "apiVersion": API_CONTENT,
-            "kind": "Post",
-            "metadata": {
-                "name": slug,
-                "labels": {},
-            },
-            "spec": {
-                "title": title,
-                "slug": slug,
-                "visible": "PUBLIC",
-                "allowComment": True,
-                "excerpt": {"autoGenerate": True, "raw": ""},
-                "publish": True,
-                "deleted": False,
-                "pinned": False,
-                "priority": 0,
-            },
+        "spec": {
+            "title": title,
+            "slug": slug,
+            "visible": "PUBLIC",
+            "allowComment": True,
+            "excerpt": {"autoGenerate": True, "raw": ""},
+            "publish": True,
+            "deleted": False,
+            "pinned": False,
+            "priority": 0,
+            "raw": content,
+            "originalContent": content,
         },
     }
 

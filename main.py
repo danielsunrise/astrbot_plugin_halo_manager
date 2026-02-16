@@ -17,6 +17,38 @@ API_CONSOLE = "api.console.halo.run/v1alpha1"
 CONFIG_HALO_URL = "halo_url"
 CONFIG_HALO_TOKEN = "halo_token"
 
+
+def _build_create_post_payload(title: str, content: str, slug: str) -> Dict[str, Any]:
+    """按 Halo 2.x 标准请求体构建发帖 payload：顶层 content + post。"""
+    return {
+        "content": {
+            "content": content,
+            "raw": content,
+            "rawType": "MARKDOWN",
+            "version": 0,
+        },
+        "post": {
+            "apiVersion": API_CONTENT,
+            "kind": "Post",
+            "metadata": {
+                "name": slug,
+                "labels": {},
+            },
+            "spec": {
+                "title": title,
+                "slug": slug,
+                "visible": "PUBLIC",
+                "allowComment": True,
+                "excerpt": {"autoGenerate": True, "raw": ""},
+                "publish": True,
+                "deleted": False,
+                "pinned": False,
+                "priority": 0,
+            },
+        },
+    }
+
+
 @register(
     "astrbot_plugin_halo_manager",
     "CAN",
@@ -88,24 +120,7 @@ class HaloManager(Star):
             slug = f"post-{int(time.time())}"
         # 仅保留 Halo 支持的字符，避免非法 name/slug
         slug = re.sub(r"[^a-zA-Z0-9_-]+", "-", slug).strip("-") or f"post-{int(time.time())}"
-        
-        payload = {
-            "apiVersion": API_CONTENT,
-            "kind": "Post",
-            "metadata": {
-                "name": slug,
-                "labels": {}
-            },
-            "spec": {
-                "title": title,
-                "slug": slug,
-                "visible": "PUBLIC", 
-                "allowComment": True,
-                "raw": content,
-                "originalContent": content
-            }
-        }
-
+        payload = _build_create_post_payload(title=title, content=content, slug=slug)
         res = await self._request("POST", f"/apis/{API_CONTENT}/posts", json_data=payload)
         
         if "error" in res:
@@ -209,19 +224,7 @@ class HaloManager(Star):
         """
         slug = slug.strip() if slug else f"post-{int(time.time())}"
         slug = re.sub(r"[^a-zA-Z0-9_-]+", "-", slug).strip("-") or f"post-{int(time.time())}"
-        payload = {
-            "apiVersion": API_CONTENT,
-            "kind": "Post",
-            "metadata": {"name": slug, "labels": {}},
-            "spec": {
-                "title": title,
-                "slug": slug,
-                "visible": "PUBLIC",
-                "allowComment": True,
-                "raw": content,
-                "originalContent": content,
-            },
-        }
+        payload = _build_create_post_payload(title=title, content=content, slug=slug)
         res = await self._request("POST", f"/apis/{API_CONTENT}/posts", json_data=payload)
         if "error" in res:
             return f"发布失败: {res.get('details', '未知错误')}"

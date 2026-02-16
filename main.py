@@ -190,6 +190,137 @@ class HaloManager(Star):
         else:
             yield event.plain_result(f"✅ 回复成功！")
 
+    # ================= LLM Tools（AI 可调用） =================
+
+    @llm_tool(name="publish_blog_post")
+    async def llm_publish_post(
+        self,
+        event: AstrMessageEvent,
+        title: str,
+        content: str,
+        slug: str = "",
+    ) -> str:
+        """在 Halo 博客上发布一篇新文章。当用户要求发博客、写文章、发布到博客时调用。
+
+        Args:
+            title(string): 文章标题。
+            content(string): 文章正文，支持 Markdown 格式。
+            slug(string): 可选，URL 路径别名。不填则自动生成。
+        """
+        slug = slug.strip() if slug else f"post-{int(time.time())}"
+        slug = re.sub(r"[^a-zA-Z0-9_-]+", "-", slug).strip("-") or f"post-{int(time.time())}"
+        payload = {
+            "apiVersion": API_CONTENT,
+            "kind": "Post",
+            "metadata": {"name": slug, "labels": {}},
+            "spec": {
+                "title": title,
+                "slug": slug,
+                "visible": "PUBLIC",
+                "allowComment": True,
+                "raw": content,
+                "originalContent": content,
+            },
+        }
+        res = await self._request("POST", f"/apis/{API_CONTENT}/posts", json_data=payload)
+        if "error" in res:
+            return f"发布失败: {res.get('details', '未知错误')}"
+        post_url = f"{self.base_url}/archives/{slug}"
+        return f"发布成功。文章标题: {title}，链接: {post_url}"
+
+    @llm_tool(name="get_blog_comments")
+    async def llm_get_comments(self, event: AstrMessageEvent) -> str:
+        """获取 Halo 博客最新的评论列表。当用户问「有什么新评论」「看看评论」时调用。"""
+        endpoint = f"/apis/{API_CONTENT}/comments?sort=metadata.creationTimestamp,desc&page=0&size=5"
+        res = await self._request("GET", endpoint)
+        if "error" in res:
+            return f"获取失败: {res['error']}"
+        items = res.get("items", [])
+        if not items:
+            return "暂无新评论。"
+        lines = ["最新 5 条评论："]
+        for item in items:
+            spec = item.get("spec", {})
+            metadata = item.get("metadata", {})
+            c_name_id = metadata.get("name")
+            c_user = spec.get("owner", {}).get("displayName", "匿名用户")
+            c_content = spec.get("content", "无内容")
+            if len(c_content) > 50:
+                c_content = c_content[:50] + "..."
+            lines.append(f"用户 {c_user}: {c_content}，评论 ID: {c_name_id}")
+        return "\n".join(lines)
+
+    @llm_tool(name="reply_blog_comment")
+    async def llm_reply_comment(
+        self,
+        event: AstrMessageEvent,
+        comment_id: str,
+        content: str,
+    ) -> str:
+        """回复 Halo 博客上的一条评论。当用户要求「回复评论」「回复某条评论」时调用。
+
+        Args:
+            comment_id(string): 要回复的评论的唯一 ID（从 get_blog_comments 可获取）。
+            content(string): 回复内容。
+        """
+        info_res = await self._request("GET", f"/apis/{API_CONTENT}/comments/{comment_id}")
+        if "error" in info_res:
+            return f"找不到原评论 (ID: {comment_id})"
+        post_id = info_res.get("spec", {}).get("subjectRef", {}).get("name")
+        if not post_id:
+            return "无法解析原评论所属文章，回复失败。"
+        payload = {
+            "apiVersion": API_CONTENT,
+            "kind": "Comment",
+            "metadata": {"name": str(uuid.uuid4())},
+            "spec": {
+                "content": content,
+                "subjectRef": {
+                    "group": "content.halo.run",
+                    "kind": "Post",
+                    "name": post_id,
+                    "version": "v1alpha1",
+                },
+                "parentId": comment_id,
+            },
+        }
+        res = await self._request("POST", f"/apis/{API_CONTENT}/comments", json_data=payload)
+        if "error" in res:
+            return f"回复失败: {res.get('details', '未知错误')}"
+        return "回复成功。"
+
+    @llm_tool(name="upload_blog_image")
+    async def llm_upload_image(
+        self,
+        event: AstrMessageEvent,
+        image_url: str,
+    ) -> str:
+        """将指定图片 URL 的图片上传到 Halo 博客。当用户要求「把这张图发到博客」「上传图片到博客」且提供了图片链接时调用。
+
+        Args:
+            image_url(string): 图片的完整 URL，需可公网访问。
+        """
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(image_url) as resp:
+                    if resp.status != 200:
+                        return "无法下载图片源文件。"
+                    img_bytes = await resp.read()
+        except Exception as e:
+            return f"下载异常: {e}"
+        file_name = f"upload_{int(time.time())}.jpg"
+        form_data = aiohttp.FormData()
+        form_data.add_field("file", img_bytes, filename=file_name, content_type="image/jpeg")
+        form_data.add_field("policy", "default")
+        form_data.add_field("group", "default")
+        res = await self._request(
+            "POST", f"/apis/{API_CONSOLE}/attachments/upload", form_data=form_data
+        )
+        if "error" in res:
+            return f"上传 Halo 失败: {res.get('details', '未知错误')}"
+        permalink = res.get("spec", {}).get("permalink", "")
+        return f"上传成功，链接: {permalink}"
+
     @command("upload_blog_image")
     async def upload_image(self, event: AstrMessageEvent):
         """

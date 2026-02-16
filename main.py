@@ -2,6 +2,7 @@ import json
 import re
 import time
 import uuid
+from urllib.parse import quote
 import aiohttp
 from typing import Any, Dict, Optional
 
@@ -18,40 +19,96 @@ from astrbot.core.message.components import Image
 # Halo API 常量
 API_CONTENT = "content.halo.run/v1alpha1"
 API_CONSOLE = "api.console.halo.run/v1alpha1"
+# Console API：草稿接口 https://api.halo.run/#/PostV1alpha1Console/DraftPost
+CONSOLE_POSTS = "/apis/api.console.halo.run/v1alpha1/posts"
+# Console API：当前用户详情 https://api.halo.run/#/UserV1alpha1Console/GetCurrentUserDetail
+CONSOLE_USER_ME = "/apis/api.console.halo.run/v1alpha1/users/me"
+# Content API：单资源创建（备用）
+CONTENT_POSTS = f"/apis/{API_CONTENT}/posts"
 
 
 CONFIG_HALO_URL = "halo_url"
 CONFIG_HALO_TOKEN = "halo_token"
+CONFIG_HALO_OWNER = "halo_owner"
 
 
-def _build_create_post_payload(title: str, content: str, slug: str) -> Dict[str, Any]:
-    """构建发帖 payload。POST /apis/.../posts 由 ReactiveExtensionClientImpl.create 处理，只接受单个 Post 资源，不能发 content+post 包装。"""
+def _build_console_draft_payload(
+    title: str, content: str, slug: str, owner: str = ""
+) -> Dict[str, Any]:
+    """按官方 DraftPost 文档构建 content+post 包装体，用于 POST /apis/api.console.halo.run/v1alpha1/posts。"""
     raw = content or ""
     excerpt_raw = (raw[:500] + "...") if len(raw) > 500 else raw
+    spec: Dict[str, Any] = {
+        "title": title or "无标题",
+        "slug": slug,
+        "visible": "PUBLIC",
+        "allowComment": True,
+        "excerpt": {"autoGenerate": True, "raw": excerpt_raw},
+        "publish": False,
+        "deleted": False,
+        "pinned": False,
+        "priority": 0,
+        "template": "",
+    }
+    if owner and owner.strip():
+        spec["owner"] = owner.strip()
+    return {
+        "content": {
+            "content": raw,
+            "raw": raw,
+            "rawType": "MARKDOWN",
+            "version": 0,
+        },
+        "post": {
+            "apiVersion": API_CONTENT,
+            "kind": "Post",
+            "metadata": {"name": slug, "labels": {}},
+            "spec": spec,
+        },
+    }
+
+
+def _build_create_post_payload(
+    title: str, content: str, slug: str, owner: str = ""
+) -> Dict[str, Any]:
+    """Content API 单 Post 资源体（Console 草稿 404 时备用）。"""
+    raw = content or ""
+    excerpt_raw = (raw[:500] + "...") if len(raw) > 500 else raw
+    spec: Dict[str, Any] = {
+        "title": title or "无标题",
+        "slug": slug,
+        "visible": "PUBLIC",
+        "allowComment": True,
+        "excerpt": {"autoGenerate": True, "raw": excerpt_raw},
+        "publish": True,
+        "deleted": False,
+        "pinned": False,
+        "priority": 0,
+        "template": "",
+        "raw": raw,
+        "originalContent": raw,
+    }
+    if owner and owner.strip():
+        spec["owner"] = owner.strip()
     return {
         "apiVersion": API_CONTENT,
         "kind": "Post",
-        "metadata": {
-            "name": slug,
-            "labels": {},
-        },
-        "spec": {
-            "title": title or "无标题",
-            "slug": slug,
-            "visible": "PUBLIC",
-            "allowComment": True,
-            "excerpt": {"autoGenerate": True, "raw": excerpt_raw},
-            "publish": True,
-            "deleted": False,
-            "pinned": False,
-            "priority": 0,
-            "template": "",
-            "tags": [],
-            "categories": [],
-            "raw": raw,
-            "originalContent": raw,
-        },
+        "metadata": {"name": slug, "labels": {}},
+        "spec": spec,
     }
+
+
+def _head_snapshot_from_post_response(res: dict) -> str:
+    """从创建文章接口的响应中解析 headSnapshot（内容快照名），用于后续调用发布接口。"""
+    if not res or "error" in res:
+        return ""
+    status = res.get("status") or {}
+    spec = res.get("spec") or {}
+    for key in ("headSnapshot", "releaseSnapshot"):
+        val = status.get(key) or spec.get(key)
+        if val and str(val).strip():
+            return str(val).strip()
+    return ""
 
 
 # ---------- LLM Tools（按文档 https://docs.astrbot.app/dev/star/guides/ai.html#定义-tool 使用 FunctionTool + add_llm_tools 注册） ----------
@@ -188,6 +245,8 @@ class HaloManager(Star):
         raw_url = self.config.get(CONFIG_HALO_URL, "")
         self.base_url = raw_url.rstrip("/") if raw_url else ""
         self.token = self.config.get(CONFIG_HALO_TOKEN, "")
+        self.owner = (self.config.get(CONFIG_HALO_OWNER) or "").strip()
+        self._cached_owner: Optional[str] = None  # 通过 token 拉取到的当前用户名，避免重复请求
         if not self.base_url or not self.token:
             logger.warning("配置缺失！请在 Web 面板或 _conf_schema.json 中填写 URL 和 Token。")
         # 按文档在 __init__ 中注册 LLM 工具，供 AI 对话时自动调用
@@ -236,6 +295,63 @@ class HaloManager(Star):
             logger.exception("网络请求异常: %s", e)
             return {"error": "网络请求异常", "details": str(e)}
 
+    async def _publish_post(self, name: str, head_snapshot: str = "") -> dict:
+        """PUT 控制台发布接口，使草稿正式发布。见 https://api.halo.run/#/PostV1alpha1Console/PublishPost"""
+        path = f"{CONSOLE_POSTS}/{name}/publish"
+        if head_snapshot:
+            path = f"{path}?headSnapshot={quote(head_snapshot, safe='')}&async=false"
+        else:
+            path = f"{path}?async=false"
+        return await self._request("PUT", path)
+
+    async def _get_effective_owner(self) -> str:
+        """优先用配置的 halo_owner；未配置时通过 token 请求当前用户，并缓存。"""
+        if self.owner:
+            return self.owner
+        if self._cached_owner is not None:
+            return self._cached_owner
+        username = await self._fetch_current_username_from_token()
+        self._cached_owner = username or ""
+        if not self._cached_owner:
+            logger.warning("未配置 halo_owner 且无法通过 token 获取当前用户，发布文章时评论通知可能报错。")
+        return self._cached_owner
+
+    def _parse_username_from_user_response(self, res: dict) -> str:
+        """从 GetCurrentUserDetail 等用户接口响应中解析用户名（Owner 用），优先 username 字段。"""
+        if not res or "error" in res:
+            return ""
+        meta = res.get("metadata") or {}
+        spec = res.get("spec") or {}
+        for key in ("username", "name", "displayName"):
+            val = meta.get(key) or spec.get(key)
+            if val and str(val).strip():
+                return str(val).strip()
+        if res.get("name"):
+            return str(res["name"]).strip()
+        return ""
+
+    async def _fetch_current_username_from_token(self) -> str:
+        """通过 PAT 请求 Halo 当前用户信息，返回 username。优先使用 Console GetCurrentUserDetail。"""
+        for endpoint in [
+            CONSOLE_USER_ME,  # https://api.halo.run/#/UserV1alpha1Console/GetCurrentUserDetail
+            "/apis/api.uc.halo.run/v1alpha1/users/me",
+        ]:
+            res = await self._request("GET", endpoint)
+            name = self._parse_username_from_user_response(res)
+            if name:
+                return name
+        # 2) 尝试用户列表（部分版本 list 需认证，返回与当前用户相关）
+        list_res = await self._request(
+            "GET", "/apis/api.console.halo.run/v1alpha1/users?page=0&size=1"
+        )
+        if "error" not in list_res:
+            items = list_res.get("items") or []
+            if items:
+                name = self._parse_username_from_user_response(items[0])
+                if name:
+                    return name
+        return ""
+
     # ================= Command / Tools =================
     
     @command("publish_blog_post")
@@ -251,19 +367,44 @@ class HaloManager(Star):
             slug = f"post-{int(time.time())}"
         # 仅保留 Halo 支持的字符，避免非法 name/slug
         slug = re.sub(r"[^a-zA-Z0-9_-]+", "-", slug).strip("-") or f"post-{int(time.time())}"
-        payload = _build_create_post_payload(title=title, content=content, slug=slug)
-        res = await self._request("POST", f"/apis/{API_CONTENT}/posts", json_data=payload)
-        
+        # 作者：优先配置的 halo_owner，未配置时通过 GetCurrentUserDetail 接口获取当前 PAT 对应用户名
+        owner = (await self._get_effective_owner() or "").strip()
+        if not owner:
+            yield event.plain_result(
+                "❌ 发布失败：无法获取文章作者。请在插件配置中填写「文章作者」，或确认 PAT 有效以便通过当前用户接口获取。"
+            )
+            return
+        # 优先走官方 Console 草稿接口 https://api.halo.run/#/PostV1alpha1Console/DraftPost
+        draft_payload = _build_console_draft_payload(title=title, content=content, slug=slug, owner=owner)
+        res = await self._request("POST", CONSOLE_POSTS, json_data=draft_payload)
         if "error" in res:
-            yield event.plain_result(f"❌ 发布失败: {res.get('details', '未知错误')}")
+            # 部分环境 Console 未挂载，回退到 Content API 单资源创建
+            payload = _build_create_post_payload(title=title, content=content, slug=slug, owner=owner)
+            res = await self._request("POST", CONTENT_POSTS, json_data=payload)
+            if "error" in res:
+                yield event.plain_result(f"❌ 发布失败: {res.get('details', '未知错误')}")
+                return
+            post_name = (res.get("metadata") or {}).get("name") or slug
+            head_snapshot = _head_snapshot_from_post_response(res)
+            pub_res = await self._publish_post(post_name, head_snapshot)
+            if "error" in pub_res:
+                yield event.plain_result(f"❌ 文章已创建但发布失败: {pub_res.get('details', '未知错误')}")
+                return
         else:
-            post_url = f"{self.base_url}/archives/{slug}"
-            yield event.plain_result(f"✅ 发布成功！\n文章标题: {title}\n🔗 链接: {post_url}")
+            post_name = (res.get("metadata") or {}).get("name") or ((res.get("post") or {}).get("metadata") or {}).get("name") or slug
+            head_snapshot = _head_snapshot_from_post_response(res.get("post") or res)
+            pub_res = await self._publish_post(post_name, head_snapshot)
+            if "error" in pub_res:
+                yield event.plain_result(f"❌ 草稿已创建但发布失败: {pub_res.get('details', '未知错误')}")
+                return
+        post_url = f"{self.base_url}/archives/{slug}"
+        yield event.plain_result(f"✅ 发布成功！\n文章标题: {title}\n🔗 链接: {post_url}")
 
     @command("get_blog_comments")
     async def get_comments(self, event: AstrMessageEvent):
         """获取博客最新的评论列表"""
         
+        # size 必须 > 0，否则 Halo 会 WARN: Page size must be greater than 0
         endpoint = f"/apis/{API_CONTENT}/comments?sort=metadata.creationTimestamp,desc&page=0&size=5"
         res = await self._request("GET", endpoint)
 
@@ -347,14 +488,29 @@ class HaloManager(Star):
     ) -> str:
         slug = slug.strip() if slug else f"post-{int(time.time())}"
         slug = re.sub(r"[^a-zA-Z0-9_-]+", "-", slug).strip("-") or f"post-{int(time.time())}"
-        payload = _build_create_post_payload(title=title, content=content, slug=slug)
-        res = await self._request("POST", f"/apis/{API_CONTENT}/posts", json_data=payload)
+        owner = (await self._get_effective_owner() or "").strip()
+        if not owner:
+            return "发布失败：无法获取文章作者。请配置「文章作者」或确认 PAT 有效。"
+        draft_payload = _build_console_draft_payload(title=title, content=content, slug=slug, owner=owner)
+        res = await self._request("POST", CONSOLE_POSTS, json_data=draft_payload)
         if "error" in res:
-            return f"发布失败: {res.get('details', '未知错误')}"
+            payload = _build_create_post_payload(title=title, content=content, slug=slug, owner=owner)
+            res = await self._request("POST", CONTENT_POSTS, json_data=payload)
+            if "error" in res:
+                return f"发布失败: {res.get('details', '未知错误')}"
+            post_name = (res.get("metadata") or {}).get("name") or slug
+            head_snapshot = _head_snapshot_from_post_response(res)
+        else:
+            post_name = (res.get("metadata") or {}).get("name") or ((res.get("post") or {}).get("metadata") or {}).get("name") or slug
+            head_snapshot = _head_snapshot_from_post_response(res.get("post") or res)
+        pub_res = await self._publish_post(post_name, head_snapshot)
+        if "error" in pub_res:
+            return f"文章已创建但发布失败: {pub_res.get('details', '未知错误')}"
         post_url = f"{self.base_url}/archives/{slug}"
         return f"发布成功。文章标题: {title}，链接: {post_url}"
 
     async def _llm_get_comments(self, event: AstrMessageEvent) -> str:
+        # size 必须 > 0，否则 Halo 会 WARN: Page size must be greater than 0
         endpoint = f"/apis/{API_CONTENT}/comments?sort=metadata.creationTimestamp,desc&page=0&size=5"
         res = await self._request("GET", endpoint)
         if "error" in res:

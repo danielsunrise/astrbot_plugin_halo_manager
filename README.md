@@ -48,7 +48,7 @@
 
 ### 让 AI 能调用本插件（LLM 工具）
 
-插件已注册 4 个 **LLM 工具**，AI 在对话时可自动选择调用：
+插件按 [AstrBot 文档 - 定义 Tool](https://docs.astrbot.app/dev/star/guides/ai.html#%E5%AE%9A%E4%B9%89-tool) 的推荐方式，使用 **FunctionTool 类 + `add_llm_tools`** 在 `__init__` 中注册了 4 个 **LLM 工具**，AI 在对话时可自动选择调用：
 
 | 工具名 | 说明 |
 |--------|------|

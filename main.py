@@ -3,10 +3,16 @@ import re
 import time
 import uuid
 import aiohttp
-from typing import Optional, Dict, Any
+from typing import Any, Dict, Optional
+
+from pydantic import Field
+from pydantic.dataclasses import dataclass
 
 # 导入所有标准 API
 from astrbot.api.all import *
+from astrbot.core.agent.run_context import ContextWrapper
+from astrbot.core.agent.tool import FunctionTool, ToolExecResult
+from astrbot.core.astr_agent_context import AstrAgentContext
 from astrbot.core.message.components import Image
 
 # Halo API 常量
@@ -49,6 +55,125 @@ def _build_create_post_payload(title: str, content: str, slug: str) -> Dict[str,
     }
 
 
+# ---------- LLM Tools（按文档 https://docs.astrbot.app/dev/star/guides/ai.html#定义-tool 使用 FunctionTool + add_llm_tools 注册） ----------
+
+
+@dataclass
+class PublishBlogPostTool(FunctionTool[AstrAgentContext]):
+    """在 Halo 博客上发布一篇新文章。当用户要求发博客、写文章、发布到博客时调用。"""
+
+    plugin: Any = Field(default=None, exclude=True)
+    name: str = "publish_blog_post"
+    description: str = "在 Halo 博客上发布一篇新文章。当用户要求发博客、写文章、发布到博客时调用。"
+    parameters: dict = Field(
+        default_factory=lambda: {
+            "type": "object",
+            "properties": {
+                "title": {"type": "string", "description": "文章标题。"},
+                "content": {"type": "string", "description": "文章正文，支持 Markdown 格式。"},
+                "slug": {"type": "string", "description": "可选，URL 路径别名。不填则自动生成。"},
+            },
+            "required": ["title", "content"],
+        }
+    )
+
+    async def call(
+        self, context: ContextWrapper[AstrAgentContext], **kwargs
+    ) -> ToolExecResult:
+        if self.plugin is None:
+            return "error: plugin not initialized"
+        event = context.context.event
+        return await self.plugin._llm_publish_post(
+            event,
+            title=kwargs.get("title", ""),
+            content=kwargs.get("content", ""),
+            slug=kwargs.get("slug", ""),
+        )
+
+
+@dataclass
+class GetBlogCommentsTool(FunctionTool[AstrAgentContext]):
+    """获取 Halo 博客最新的评论列表。当用户问「有什么新评论」「看看评论」时调用。"""
+
+    plugin: Any = Field(default=None, exclude=True)
+    name: str = "get_blog_comments"
+    description: str = "获取 Halo 博客最新的评论列表。当用户问「有什么新评论」「看看评论」时调用。"
+    parameters: dict = Field(default_factory=lambda: {"type": "object", "properties": {}})
+
+    async def call(
+        self, context: ContextWrapper[AstrAgentContext], **kwargs
+    ) -> ToolExecResult:
+        if self.plugin is None:
+            return "error: plugin not initialized"
+        event = context.context.event
+        return await self.plugin._llm_get_comments(event)
+
+
+@dataclass
+class ReplyBlogCommentTool(FunctionTool[AstrAgentContext]):
+    """回复 Halo 博客上的一条评论。当用户要求「回复评论」「回复某条评论」时调用。"""
+
+    plugin: Any = Field(default=None, exclude=True)
+    name: str = "reply_blog_comment"
+    description: str = "回复 Halo 博客上的一条评论。当用户要求「回复评论」「回复某条评论」时调用。"
+    parameters: dict = Field(
+        default_factory=lambda: {
+            "type": "object",
+            "properties": {
+                "comment_id": {
+                    "type": "string",
+                    "description": "要回复的评论的唯一 ID（从 get_blog_comments 可获取）。",
+                },
+                "content": {"type": "string", "description": "回复内容。"},
+            },
+            "required": ["comment_id", "content"],
+        }
+    )
+
+    async def call(
+        self, context: ContextWrapper[AstrAgentContext], **kwargs
+    ) -> ToolExecResult:
+        if self.plugin is None:
+            return "error: plugin not initialized"
+        event = context.context.event
+        return await self.plugin._llm_reply_comment(
+            event,
+            comment_id=kwargs.get("comment_id", ""),
+            content=kwargs.get("content", ""),
+        )
+
+
+@dataclass
+class UploadBlogImageTool(FunctionTool[AstrAgentContext]):
+    """将指定图片 URL 的图片上传到 Halo 博客。当用户要求「把这张图发到博客」「上传图片到博客」且提供了图片链接时调用。"""
+
+    plugin: Any = Field(default=None, exclude=True)
+    name: str = "upload_blog_image"
+    description: str = "将指定图片 URL 的图片上传到 Halo 博客。当用户要求「把这张图发到博客」「上传图片到博客」且提供了图片链接时调用。"
+    parameters: dict = Field(
+        default_factory=lambda: {
+            "type": "object",
+            "properties": {
+                "image_url": {
+                    "type": "string",
+                    "description": "图片的完整 URL，需可公网访问。",
+                },
+            },
+            "required": ["image_url"],
+        }
+    )
+
+    async def call(
+        self, context: ContextWrapper[AstrAgentContext], **kwargs
+    ) -> ToolExecResult:
+        if self.plugin is None:
+            return "error: plugin not initialized"
+        event = context.context.event
+        return await self.plugin._llm_upload_image(
+            event, image_url=kwargs.get("image_url", "")
+        )
+
+
 @register(
     "astrbot_plugin_halo_manager",
     "CAN",
@@ -66,6 +191,13 @@ class HaloManager(Star):
         self.token = self.config.get(CONFIG_HALO_TOKEN, "")
         if not self.base_url or not self.token:
             logger.warning("配置缺失！请在 Web 面板或 _conf_schema.json 中填写 URL 和 Token。")
+        # 按文档在 __init__ 中注册 LLM 工具，供 AI 对话时自动调用
+        self.context.add_llm_tools(
+            PublishBlogPostTool(plugin=self),
+            GetBlogCommentsTool(plugin=self),
+            ReplyBlogCommentTool(plugin=self),
+            UploadBlogImageTool(plugin=self),
+        )
 
     # ================= 辅助函数 =================
 
@@ -205,23 +337,15 @@ class HaloManager(Star):
         else:
             yield event.plain_result(f"✅ 回复成功！")
 
-    # ================= LLM Tools（AI 可调用） =================
+    # ================= LLM Tool 实现（由 FunctionTool.call 调用） =================
 
-    @llm_tool(name="publish_blog_post")
-    async def llm_publish_post(
+    async def _llm_publish_post(
         self,
         event: AstrMessageEvent,
         title: str,
         content: str,
         slug: str = "",
     ) -> str:
-        """在 Halo 博客上发布一篇新文章。当用户要求发博客、写文章、发布到博客时调用。
-
-        Args:
-            title(string): 文章标题。
-            content(string): 文章正文，支持 Markdown 格式。
-            slug(string): 可选，URL 路径别名。不填则自动生成。
-        """
         slug = slug.strip() if slug else f"post-{int(time.time())}"
         slug = re.sub(r"[^a-zA-Z0-9_-]+", "-", slug).strip("-") or f"post-{int(time.time())}"
         payload = _build_create_post_payload(title=title, content=content, slug=slug)
@@ -231,9 +355,7 @@ class HaloManager(Star):
         post_url = f"{self.base_url}/archives/{slug}"
         return f"发布成功。文章标题: {title}，链接: {post_url}"
 
-    @llm_tool(name="get_blog_comments")
-    async def llm_get_comments(self, event: AstrMessageEvent) -> str:
-        """获取 Halo 博客最新的评论列表。当用户问「有什么新评论」「看看评论」时调用。"""
+    async def _llm_get_comments(self, event: AstrMessageEvent) -> str:
         endpoint = f"/apis/{API_CONTENT}/comments?sort=metadata.creationTimestamp,desc&page=0&size=5"
         res = await self._request("GET", endpoint)
         if "error" in res:
@@ -253,19 +375,12 @@ class HaloManager(Star):
             lines.append(f"用户 {c_user}: {c_content}，评论 ID: {c_name_id}")
         return "\n".join(lines)
 
-    @llm_tool(name="reply_blog_comment")
-    async def llm_reply_comment(
+    async def _llm_reply_comment(
         self,
         event: AstrMessageEvent,
         comment_id: str,
         content: str,
     ) -> str:
-        """回复 Halo 博客上的一条评论。当用户要求「回复评论」「回复某条评论」时调用。
-
-        Args:
-            comment_id(string): 要回复的评论的唯一 ID（从 get_blog_comments 可获取）。
-            content(string): 回复内容。
-        """
         info_res = await self._request("GET", f"/apis/{API_CONTENT}/comments/{comment_id}")
         if "error" in info_res:
             return f"找不到原评论 (ID: {comment_id})"
@@ -292,17 +407,11 @@ class HaloManager(Star):
             return f"回复失败: {res.get('details', '未知错误')}"
         return "回复成功。"
 
-    @llm_tool(name="upload_blog_image")
-    async def llm_upload_image(
+    async def _llm_upload_image(
         self,
         event: AstrMessageEvent,
         image_url: str,
     ) -> str:
-        """将指定图片 URL 的图片上传到 Halo 博客。当用户要求「把这张图发到博客」「上传图片到博客」且提供了图片链接时调用。
-
-        Args:
-            image_url(string): 图片的完整 URL，需可公网访问。
-        """
         try:
             async with aiohttp.ClientSession() as session:
                 async with session.get(image_url) as resp:

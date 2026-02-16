@@ -1,38 +1,43 @@
+import json
+import re
 import time
 import uuid
-import json
 import aiohttp
-from typing import List, Optional, Dict, Any
+from typing import Optional, Dict, Any
 
 # 导入所有标准 API
 from astrbot.api.all import *
 from astrbot.core.message.components import Image
+
+# Halo API 常量
+API_CONTENT = "content.halo.run/v1alpha1"
+API_CONSOLE = "api.console.halo.run/v1alpha1"
+
+
+CONFIG_HALO_URL = "halo_url"
+CONFIG_HALO_TOKEN = "halo_token"
 
 @register(
     "astrbot_plugin_halo_manager",
     "CAN",
     "Halo 2.x 博客管理插件",
     "1.2.8",
-    "https://github.com/your-repo/halo_manager"
+    "https://github.com/danielsunrise/astrbot_plugin_halo_manager"
 )
 class HaloManager(Star):
     def __init__(self, context: Context, config: Dict[str, Any]):
         super().__init__(context)
-        self.config = config
         
-        # 容错处理：处理 URL 末尾的斜杠
-        raw_url = self.config.get("halo_url", "")
-        self.base_url = raw_url.rstrip('/') if raw_url else ""
-        self.token = self.config.get("halo_token", "")
-        
-        # --- 这里的逻辑已修改 ---
-        # 如果配置为空，我们只打印到控制台，绝不调用 logger 以避免 Formatting Error
+        self.config = config or {}
+        raw_url = self.config.get(CONFIG_HALO_URL, "")
+        self.base_url = raw_url.rstrip("/") if raw_url else ""
+        self.token = self.config.get(CONFIG_HALO_TOKEN, "")
         if not self.base_url or not self.token:
-            print("[HaloManager] ⚠️ 警告：配置缺失！请在 Web 面板或 _conf_schema.json 中填写 URL 和 Token。")
+            logger.warning("配置缺失！请在 Web 面板或 _conf_schema.json 中填写 URL 和 Token。")
 
     # ================= 辅助函数 =================
 
-    async def _request(self, method: str, endpoint: str, json_data: dict = None, form_data: aiohttp.FormData = None) -> dict:
+    async def _request(self, method: str, endpoint: str, json_data: Optional[dict] = None, form_data: Optional[aiohttp.FormData] = None) -> dict:
         """异步请求 Halo API"""
         if not self.base_url or not self.token:
             return {"error": "配置未填写", "details": "请在 AstrBot 设置中配置 Halo URL 和 Token"}
@@ -46,32 +51,32 @@ class HaloManager(Star):
 
         try:
             async with aiohttp.ClientSession() as session:
+                req_headers = dict(headers)
+                if not form_data:
+                    req_headers["Content-Type"] = "application/json"
+                req_kw: Dict[str, Any] = {"method": method, "url": url, "headers": req_headers}
                 if form_data:
-                    async with session.request(method, url, headers=headers, data=form_data) as resp:
-                        if resp.status >= 400:
-                            text = await resp.text()
-                            # print 代替 logger
-                            print(f"[HaloManager] Upload Error: {resp.status} - {text[:100]}")
-                            return {"error": f"API Error {resp.status}", "details": text[:200]}
-                        return await resp.json()
-                else:
-                    headers["Content-Type"] = "application/json"
-                    async with session.request(method, url, headers=headers, json=json_data) as resp:
-                        if resp.status >= 400:
-                            text = await resp.text()
-                            # print 代替 logger
-                            print(f"[HaloManager] API Error: {resp.status} - {text[:100]}")
-                            return {"error": f"API Error {resp.status}", "details": text[:200]}
-                        return await resp.json()
+                    req_kw["data"] = form_data
+                elif json_data is not None:
+                    req_kw["json"] = json_data
+                async with session.request(**req_kw) as resp:
+                    text = await resp.text()
+                    if resp.status >= 400:
+                        logger.warning("API Error %s: %s", resp.status, text[:100])
+                        return {"error": f"API Error {resp.status}", "details": text[:200]}
+                    try:
+                        return json.loads(text) if text.strip() else {}
+                    except ValueError:
+                        logger.warning("Invalid JSON response: %s", text[:100])
+                        return {"error": "响应非 JSON", "details": text[:200]}
         except Exception as e:
-            # print 代替 logger
-            print(f"[HaloManager] Network Exception: {e}")
+            logger.exception("网络请求异常: %s", e)
             return {"error": "网络请求异常", "details": str(e)}
 
     # ================= Command / Tools =================
     
     @command("publish_blog_post")
-    async def publish_post(self, event: AstrMessageEvent, title: str, content: str, slug: str = None):
+    async def publish_post(self, event: AstrMessageEvent, title: str, content: str, slug: Optional[str] = None):
         """
         发布一篇新的博客文章。
         Args:
@@ -81,9 +86,11 @@ class HaloManager(Star):
         """
         if not slug:
             slug = f"post-{int(time.time())}"
+        # 仅保留 Halo 支持的字符，避免非法 name/slug
+        slug = re.sub(r"[^a-zA-Z0-9_-]+", "-", slug).strip("-") or f"post-{int(time.time())}"
         
         payload = {
-            "apiVersion": "content.halo.run/v1alpha1",
+            "apiVersion": API_CONTENT,
             "kind": "Post",
             "metadata": {
                 "name": slug,
@@ -99,7 +106,7 @@ class HaloManager(Star):
             }
         }
 
-        res = await self._request("POST", "/apis/content.halo.run/v1alpha1/posts", json_data=payload)
+        res = await self._request("POST", f"/apis/{API_CONTENT}/posts", json_data=payload)
         
         if "error" in res:
             yield event.plain_result(f"❌ 发布失败: {res.get('details', '未知错误')}")
@@ -111,7 +118,7 @@ class HaloManager(Star):
     async def get_comments(self, event: AstrMessageEvent):
         """获取博客最新的评论列表"""
         
-        endpoint = "/apis/content.halo.run/v1alpha1/comments?sort=metadata.creationTimestamp,desc&page=0&size=5"
+        endpoint = f"/apis/{API_CONTENT}/comments?sort=metadata.creationTimestamp,desc&page=0&size=5"
         res = await self._request("GET", endpoint)
 
         if "error" in res:
@@ -132,7 +139,8 @@ class HaloManager(Star):
             c_user = spec.get("owner", {}).get("displayName", "匿名用户")
             c_content = spec.get("content", "无内容")
             
-            if len(c_content) > 50: c_content = c_content[:50] + "..."
+            if len(c_content) > 50:
+                c_content = c_content[:50] + "..."
             
             msg_list.append(f"--------------\n👤 {c_user}: {c_content}\n🆔 ID: {c_name_id}")
 
@@ -147,7 +155,7 @@ class HaloManager(Star):
             comment_id (str): 评论的唯一 ID (name)
             content (str): 回复内容
         """
-        info_res = await self._request("GET", f"/apis/content.halo.run/v1alpha1/comments/{comment_id}")
+        info_res = await self._request("GET", f"/apis/{API_CONTENT}/comments/{comment_id}")
         
         if "error" in info_res:
             yield event.plain_result(f"❌ 找不到原评论 (ID: {comment_id})")
@@ -160,7 +168,7 @@ class HaloManager(Star):
 
         reply_uuid = str(uuid.uuid4())
         payload = {
-            "apiVersion": "content.halo.run/v1alpha1",
+            "apiVersion": API_CONTENT,
             "kind": "Comment",
             "metadata": {"name": reply_uuid},
             "spec": {
@@ -175,10 +183,10 @@ class HaloManager(Star):
             }
         }
 
-        res = await self._request("POST", "/apis/content.halo.run/v1alpha1/comments", json_data=payload)
+        res = await self._request("POST", f"/apis/{API_CONTENT}/comments", json_data=payload)
         
         if "error" in res:
-            yield event.plain_result(f"❌ 回复失败: {res.get('details')}")
+            yield event.plain_result(f"❌ 回复失败: {res.get('details', '未知错误')}")
         else:
             yield event.plain_result(f"✅ 回复成功！")
 
@@ -217,10 +225,10 @@ class HaloManager(Star):
         form_data.add_field('policy', 'default')
         form_data.add_field('group', 'default')
 
-        res = await self._request("POST", "/apis/api.console.halo.run/v1alpha1/attachments/upload", form_data=form_data)
+        res = await self._request("POST", f"/apis/{API_CONSOLE}/attachments/upload", form_data=form_data)
 
         if "error" in res:
-            yield event.plain_result(f"❌ 上传 Halo 失败: {res.get('details')}")
+            yield event.plain_result(f"❌ 上传 Halo 失败: {res.get('details', '未知错误')}")
         else:
             permalink = res.get("spec", {}).get("permalink", "")
             yield event.plain_result(f"✅ 上传成功！\n🔗 Link: {permalink}")

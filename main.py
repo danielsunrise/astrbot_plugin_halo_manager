@@ -25,36 +25,31 @@ CONFIG_HALO_TOKEN = "halo_token"
 
 
 def _build_create_post_payload(title: str, content: str, slug: str) -> Dict[str, Any]:
-    """构建发帖 payload。Halo 2.x 创建文章接口可能要求 content+post 包装体，否则易 500。"""
+    """构建发帖 payload。POST /apis/.../posts 由 ReactiveExtensionClientImpl.create 处理，只接受单个 Post 资源，不能发 content+post 包装。"""
     raw = content or ""
+    excerpt_raw = (raw[:500] + "...") if len(raw) > 500 else raw
     return {
-        "content": {
-            "content": raw,
-            "raw": raw,
-            "rawType": "MARKDOWN",
-            "version": 0,
+        "apiVersion": API_CONTENT,
+        "kind": "Post",
+        "metadata": {
+            "name": slug,
+            "labels": {},
         },
-        "post": {
-            "apiVersion": API_CONTENT,
-            "kind": "Post",
-            "metadata": {
-                "name": slug,
-                "labels": {},
-            },
-            "spec": {
-                "title": title or "无标题",
-                "slug": slug,
-                "visible": "PUBLIC",
-                "allowComment": True,
-                "excerpt": {"autoGenerate": True, "raw": (raw[:500] + "..." if len(raw) > 500 else raw) or ""},
-                "publish": True,
-                "deleted": False,
-                "pinned": False,
-                "priority": 0,
-                "template": "",
-                "tags": [],
-                "categories": [],
-            },
+        "spec": {
+            "title": title or "无标题",
+            "slug": slug,
+            "visible": "PUBLIC",
+            "allowComment": True,
+            "excerpt": {"autoGenerate": True, "raw": excerpt_raw},
+            "publish": True,
+            "deleted": False,
+            "pinned": False,
+            "priority": 0,
+            "template": "",
+            "tags": [],
+            "categories": [],
+            "raw": raw,
+            "originalContent": raw,
         },
     }
 

@@ -13,6 +13,10 @@ from astrbot.core.message.components import Image
 API_CONTENT = "content.halo.run/v1alpha1"
 API_CONSOLE = "api.console.halo.run/v1alpha1"
 
+
+CONFIG_HALO_URL = "halo_url"
+CONFIG_HALO_TOKEN = "halo_token"
+
 @register(
     "astrbot_plugin_halo_manager",
     "CAN",
@@ -23,13 +27,11 @@ API_CONSOLE = "api.console.halo.run/v1alpha1"
 class HaloManager(Star):
     def __init__(self, context: Context, config: Dict[str, Any]):
         super().__init__(context)
-        self.config = config
         
-        # 容错处理：处理 URL 末尾的斜杠
-        raw_url = self.config.get("halo_url", "")
-        self.base_url = raw_url.rstrip('/') if raw_url else ""
-        self.token = self.config.get("halo_token", "")
-        
+        self.config = config or {}
+        raw_url = self.config.get(CONFIG_HALO_URL, "")
+        self.base_url = raw_url.rstrip("/") if raw_url else ""
+        self.token = self.config.get(CONFIG_HALO_TOKEN, "")
         if not self.base_url or not self.token:
             logger.warning("配置缺失！请在 Web 面板或 _conf_schema.json 中填写 URL 和 Token。")
 
